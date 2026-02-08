@@ -50,8 +50,9 @@ type Router struct {
 	config    Config
 	providers map[Protocol]PaymentProvider
 	client    *http.Client
+	wot       *WoTChecker
 
-	mu          sync.Mutex
+	mu           sync.Mutex
 	sessionSpend float64
 	receipts     []Receipt
 }
@@ -68,6 +69,11 @@ func New(cfg Config) *Router {
 // RegisterProvider adds a payment provider for a protocol.
 func (r *Router) RegisterProvider(p PaymentProvider) {
 	r.providers[p.Protocol()] = p
+}
+
+// SetWoTChecker enables trust scoring before payments.
+func (r *Router) SetWoTChecker(w *WoTChecker) {
+	r.wot = w
 }
 
 // Fetch sends an HTTP request and handles any 402 payment requirements transparently.
@@ -141,6 +147,16 @@ func (r *Router) Fetch(ctx context.Context, method, url string, body io.Reader, 
 
 	if err := r.checkBudget(usdCost); err != nil {
 		return respBody, nil, err
+	}
+
+	// WoT trust check: verify the payment recipient before settling
+	if r.wot != nil {
+		recipientID := extractRecipient(payReq)
+		if recipientID != "" {
+			if err := r.wot.CheckTrust(recipientID, usdCost); err != nil {
+				return respBody, nil, fmt.Errorf("trust check failed: %w", err)
+			}
+		}
 	}
 
 	if r.config.DryRun {
@@ -239,4 +255,12 @@ func (r *Router) SessionSpend() float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.sessionSpend
+}
+
+// extractRecipient returns the payment recipient identifier from a payment requirement.
+func extractRecipient(req *PaymentRequirement) string {
+	if req.X402Requirement != nil && len(req.X402Requirement.Accepts) > 0 {
+		return req.X402Requirement.Accepts[0].PayTo
+	}
+	return req.L402Hash
 }

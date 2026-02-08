@@ -352,3 +352,110 @@ func TestRouter_FetchWithBody(t *testing.T) {
 		t.Errorf("unexpected response: %s", body)
 	}
 }
+
+func TestRouter_WoTTrustBlock(t *testing.T) {
+	// WoT service that returns a low trust score
+	wotSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(WoTScore{Pubkey: "0xuntrusted", Score: 0.0001, Rank: 50000})
+	}))
+	defer wotSrv.Close()
+
+	// Target that returns 402 with x402 requirement
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		req := X402Requirement{
+			Accepts: []X402Accept{{
+				Network:           "eip155:84532",
+				MaxAmountRequired: "10000000",
+				PayTo:             "0xuntrusted",
+			}},
+		}
+		data, _ := json.Marshal(req)
+		w.Header().Set("Payment-Required", base64.StdEncoding.EncodeToString(data))
+		w.WriteHeader(402)
+	}))
+	defer srv.Close()
+
+	wot := NewWoTChecker(wotSrv.URL)
+	wot.MinScore = 0.001
+	wot.ThresholdUSD = 0.01
+
+	r := New(Config{MaxPerRequestUSD: 100.0, MaxSessionUSD: 1000.0})
+	r.RegisterProvider(&mockProvider{
+		protocol:    ProtocolX402,
+		cost:        1.0,
+		description: "$1.00 USDC",
+		headerName:  "Payment-Signature",
+		headerValue: "sig_test",
+	})
+	r.SetWoTChecker(wot)
+
+	_, _, err := r.Fetch(context.Background(), "GET", srv.URL, nil, nil)
+	if err == nil {
+		t.Fatal("expected trust check error")
+	}
+	if !strings.Contains(err.Error(), "trust check failed") {
+		t.Errorf("expected trust check error, got: %v", err)
+	}
+	if callCount != 1 {
+		t.Errorf("expected only 1 call (no retry after trust failure), got %d", callCount)
+	}
+}
+
+func TestRouter_WoTTrustAllow(t *testing.T) {
+	// WoT service that returns a high trust score
+	wotSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(WoTScore{Pubkey: "0xtrusted", Score: 0.05, Rank: 10})
+	}))
+	defer wotSrv.Close()
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if r.Header.Get("Payment-Signature") != "" {
+			w.WriteHeader(200)
+			w.Write([]byte(`{"result":"trusted payment"}`))
+			return
+		}
+		req := X402Requirement{
+			Accepts: []X402Accept{{
+				Network:           "eip155:84532",
+				MaxAmountRequired: "10000",
+				PayTo:             "0xtrusted",
+			}},
+		}
+		data, _ := json.Marshal(req)
+		w.Header().Set("Payment-Required", base64.StdEncoding.EncodeToString(data))
+		w.WriteHeader(402)
+	}))
+	defer srv.Close()
+
+	wot := NewWoTChecker(wotSrv.URL)
+	wot.MinScore = 0.001
+	wot.ThresholdUSD = 0.001
+
+	r := New(Config{MaxPerRequestUSD: 1.0, MaxSessionUSD: 10.0})
+	r.RegisterProvider(&mockProvider{
+		protocol:    ProtocolX402,
+		cost:        0.01,
+		description: "$0.01 USDC",
+		headerName:  "Payment-Signature",
+		headerValue: "sig_trusted",
+	})
+	r.SetWoTChecker(wot)
+
+	body, receipt, err := r.Fetch(context.Background(), "GET", srv.URL, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receipt == nil {
+		t.Fatal("expected receipt for trusted payment")
+	}
+	if string(body) != `{"result":"trusted payment"}` {
+		t.Errorf("unexpected body: %s", body)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 calls (initial + retry), got %d", callCount)
+	}
+}

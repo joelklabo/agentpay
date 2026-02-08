@@ -29,6 +29,7 @@ var (
 	fetchBudget  float64
 	fetchVerbose bool
 	fetchHeaders []string
+	fetchWoT     bool
 )
 
 func init() {
@@ -38,6 +39,7 @@ func init() {
 	fetchCmd.Flags().Float64Var(&fetchBudget, "budget", 1.0, "Maximum USD to spend per request")
 	fetchCmd.Flags().BoolVarP(&fetchVerbose, "verbose", "v", false, "Verbose output")
 	fetchCmd.Flags().StringArrayVarP(&fetchHeaders, "header", "H", nil, "HTTP headers (key: value)")
+	fetchCmd.Flags().BoolVar(&fetchWoT, "wot", false, "Enable Web of Trust trust scoring before payments")
 }
 
 func runFetch(cmd *cobra.Command, args []string) error {
@@ -72,6 +74,14 @@ func runFetch(cmd *cobra.Command, args []string) error {
 	if cfg.LNbits.URL != "" {
 		l402 := providers.NewL402Provider(cfg.LNbits.URL, cfg.LNbits.AdminKey)
 		r.RegisterProvider(l402)
+	}
+
+	if fetchWoT {
+		wot := router.NewWoTChecker("https://maximumsats.joel-dfd.workers.dev/wot/score")
+		r.SetWoTChecker(wot)
+		if fetchVerbose {
+			fmt.Fprintln(os.Stderr, "WoT trust scoring enabled")
+		}
 	}
 
 	// Parse headers

@@ -61,12 +61,20 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 		r.RegisterProvider(l402)
 	}
 
+	// Enable WoT trust scoring
+	wot := router.NewWoTChecker("https://maximumsats.joel-dfd.workers.dev/wot/score")
+	r.SetWoTChecker(wot)
+
 	ctx := context.Background()
 	start := time.Now()
 
 	fmt.Println("╔══════════════════════════════════════════════════╗")
 	fmt.Println("║       AgentPay Cross-Protocol Workflow           ║")
+	fmt.Println("║       with Web of Trust verification             ║")
 	fmt.Println("╚══════════════════════════════════════════════════╝")
+	fmt.Println()
+	fmt.Println("  WoT: Trust scoring enabled (Nostr social graph, 51K+ nodes)")
+	fmt.Printf("  WoT: Minimum score %.4f, threshold $%.2f\n", wot.MinScore, wot.ThresholdUSD)
 	fmt.Println()
 
 	// Load registry for known APIs
