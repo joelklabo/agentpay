@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -288,5 +289,66 @@ func TestRouter_SessionSpendTracking(t *testing.T) {
 	_, _, err := r.Fetch(context.Background(), "GET", srv.URL, nil, nil)
 	if err == nil {
 		t.Fatal("expected budget error on 6th request")
+	}
+}
+
+func TestRouter_FetchWithBody(t *testing.T) {
+	// Verify that POST bodies are correctly replayed after 402 payment
+	var firstBody, retryBody string
+	callCount := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		b, _ := io.ReadAll(r.Body)
+		if callCount == 1 {
+			firstBody = string(b)
+			req := X402Requirement{
+				Accepts: []X402Accept{{
+					Network:           "eip155:84532",
+					MaxAmountRequired: "10000",
+					PayTo:             "0xabc123",
+				}},
+			}
+			data, _ := json.Marshal(req)
+			w.Header().Set("Payment-Required", base64.StdEncoding.EncodeToString(data))
+			w.WriteHeader(402)
+			return
+		}
+		retryBody = string(b)
+		w.WriteHeader(200)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	r := New(Config{MaxPerRequestUSD: 1.0, MaxSessionUSD: 10.0})
+	r.RegisterProvider(&mockProvider{
+		protocol:    ProtocolX402,
+		cost:        0.01,
+		description: "$0.01",
+		headerName:  "Payment-Signature",
+		headerValue: "sig_test",
+	})
+
+	payload := `{"query":"important data"}`
+	body, receipt, err := r.Fetch(context.Background(), "POST", srv.URL, strings.NewReader(payload), map[string]string{
+		"Content-Type": "application/json",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receipt == nil {
+		t.Fatal("expected receipt")
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 calls, got %d", callCount)
+	}
+	if firstBody != payload {
+		t.Errorf("first request body = %q, want %q", firstBody, payload)
+	}
+	if retryBody != payload {
+		t.Errorf("retry request body = %q, want %q (body not replayed)", retryBody, payload)
+	}
+	if string(body) != `{"ok":true}` {
+		t.Errorf("unexpected response: %s", body)
 	}
 }

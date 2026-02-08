@@ -57,9 +57,16 @@ func (p *L402Provider) Pay(ctx context.Context, req *router.PaymentRequirement) 
 
 	// Pay the invoice via LNbits
 	payURL := fmt.Sprintf("%s/api/v1/payments", p.lnbitsURL)
-	payload := fmt.Sprintf(`{"out":true,"bolt11":"%s"}`, req.L402Invoice)
+	payloadData := struct {
+		Out    bool   `json:"out"`
+		Bolt11 string `json:"bolt11"`
+	}{Out: true, Bolt11: req.L402Invoice}
+	payloadBytes, err := json.Marshal(payloadData)
+	if err != nil {
+		return "", "", fmt.Errorf("marshal pay request: %w", err)
+	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", payURL, strings.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", payURL, strings.NewReader(string(payloadBytes)))
 	if err != nil {
 		return "", "", fmt.Errorf("build pay request: %w", err)
 	}

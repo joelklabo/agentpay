@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -14,7 +15,7 @@ type PaymentProvider interface {
 	// Protocol returns which payment protocol this provider handles.
 	Protocol() Protocol
 
-	// Pay settles a payment requirement and returns the proof header name and value.
+	// Pay settles a payment requirement and returns the proof header name, value, and transaction ID.
 	Pay(ctx context.Context, req *PaymentRequirement) (headerName, headerValue string, err error)
 
 	// EstimateCost returns the estimated cost in USD for a payment requirement.
@@ -72,8 +73,25 @@ func (r *Router) RegisterProvider(p PaymentProvider) {
 // Fetch sends an HTTP request and handles any 402 payment requirements transparently.
 // Returns the final response body and receipt (if payment was made).
 func (r *Router) Fetch(ctx context.Context, method, url string, body io.Reader, headers map[string]string) ([]byte, *Receipt, error) {
+	// Buffer the request body so we can replay it on 402 retry
+	var bodyBytes []byte
+	if body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(body)
+		if err != nil {
+			return nil, nil, fmt.Errorf("buffer request body: %w", err)
+		}
+	}
+
+	bodyReader := func() io.Reader {
+		if bodyBytes == nil {
+			return nil
+		}
+		return bytes.NewReader(bodyBytes)
+	}
+
 	// Build the initial request
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build request: %w", err)
 	}
@@ -147,8 +165,8 @@ func (r *Router) Fetch(ctx context.Context, method, url string, body io.Reader, 
 		}
 	}
 
-	// Retry the request with payment proof
-	retryReq, err := http.NewRequestWithContext(ctx, method, url, body)
+	// Retry the request with payment proof (body replayed from buffer)
+	retryReq, err := http.NewRequestWithContext(ctx, method, url, bodyReader())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build retry request: %w", err)
 	}
