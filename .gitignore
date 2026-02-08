@@ -1,0 +1,4 @@
+agentpay
+*.exe
+.agentpay/
+agentpay-receipts.json
